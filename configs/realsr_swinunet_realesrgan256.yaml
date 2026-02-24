@@ -1,0 +1,180 @@
+trainer:
+  target: trainer.TrainerDifIR
+
+model:
+  target: models.unet.UNetModelSwin # 去哪里找到这个模型的类
+  ckpt_path: ~
+  params:
+    image_size: 64 # 模型预期的输入图像分辨率
+    in_channels: 3 # 输入通道数，这是一个RGB图片
+    model_channels: 160 # 基础通道数 
+    out_channels: 3
+    attention_resolutions: [64,32,16,8] # 在那些层上使用注意力机制
+    dropout: 0
+    channel_mult: [1, 2, 2, 4]
+    num_res_blocks: [2, 2, 2, 2] # ResNet残差块
+    conv_resample: True # 使用卷积层来进行上采样或者下采样
+    dims: 2
+    use_fp16: False
+    num_head_channels: 32 # 每个头负责的通道数
+    use_scale_shift_norm: True # 使用缩放和平移归一化
+    resblock_updown: False
+    swin_depth: 2
+    swin_embed_dim: 192
+    window_size: 8 # Swin Transformer 窗口大小
+    mlp_ratio: 4
+    cond_lq: True # 条件控制开关，用一张低质量图片作为提示
+    lq_size: 64
+
+diffusion:
+  target: models.script_util.create_gaussian_diffusion
+  params:
+    sf: 4 # 放大倍数
+    schedule_name: exponential # 噪声调度策略
+    schedule_kwargs:
+      power: 0.3 # 控制指数函数的弯曲程度
+    etas_end: 0.99 # 采样时的随机系数，1完全随机，0完全确定
+    steps: 15 # 采样步数
+    min_noise_level: 0.04 # 最小噪声水平
+    kappa: 2.0 # 调整时间步密度分布，让模型把更多注意力集中到对图像质量影响最大的那些时间步上
+    weighted_mse: False # 所有时间步的权重一样
+    predict_type: xstart # 模型直接预测去除噪声之后的干净图像
+    timestep_respacing: ~ # 时间步重采样使用默认值ddim15，可以改成ddim50
+    scale_factor: 1.0
+    normalize_input: True # 输入归一化
+    latent_flag: True # 潜空间扩散
+
+autoencoder:
+  target: ldm.models.autoencoder.VQModelTorch
+  ckpt_path: weights/autoencoder_vq_f4.pth
+  use_fp16: True
+  params:
+    embed_dim: 3 # 单词潜入维度
+    n_embed: 8192 # 词汇量
+    ddconfig:
+      double_z: False # 是否将潜在通道数翻倍
+      z_channels: 3 # 潜空间的通道数
+      resolution: 256 # 输入时的分辨率
+      in_channels: 3
+      out_ch: 3
+      ch: 128 # 基础通道数
+      ch_mult: # 通道增倍系数
+      - 1
+      - 2
+      - 4
+      num_res_blocks: 2
+      attn_resolutions: [] # 完全不使用注意力机制
+      dropout: 0.0
+      padding_mode: zeros
+
+degradation: # 退化模型，如何制作训练数据
+  sf: 4 # 目标放大倍数
+  # the first degradation process 第一轮退化
+  resize_prob: [0.2, 0.7, 0.1]  # up模拟数码变焦放大, down模拟缩略图, keep保持原样 
+  resize_range: [0.15, 1.5] # 有可能缩小到原来的15%，有可能放大1.5倍
+  gaussian_noise_prob: 0.5 # 高斯噪声的强度
+  noise_range: [1, 30]
+  poisson_scale_range: [0.05, 3.0] # 柏松噪声的强度
+  gray_noise_prob: 0.4 # 有0.4概率加黑白噪声，有0.6概率加彩色噪点
+  jpeg_range: [30, 95] # JPEG压缩质量因子
+
+  # the second degradation process 第二轮退化
+  second_order_prob: 0.5 # 有一半概率执行第二轮退化
+  second_blur_prob: 0.8 # 0.8概率加入模糊
+  resize_prob2: [0.3, 0.4, 0.3]  # up, down, keep
+  resize_range2: [0.3, 1.2]
+  gaussian_noise_prob2: 0.5
+  noise_range2: [1, 25]
+  poisson_scale_range2: [0.05, 2.5]
+  gray_noise_prob2: 0.4
+  jpeg_range2: [30, 95]
+
+  gt_size: 256 # 训练时高清图的裁剪尺寸
+  resize_back: False # 是否将低清图缩放回原尺寸
+  use_sharp: False
+
+data:
+  train:
+    type: realesrgan
+    params:
+      dir_paths: []
+      txt_file_path: [
+                      '/mnt/sfs-common/zsyue/database/ImageNet/files_txt/path_train_all.txt', 
+                      '/mnt/sfs-common/zsyue/database/FFHQ/files_txt/files256.txt',
+                     ] 
+      im_exts: ['JPEG', ]
+      io_backend:
+        type: disk
+      blur_kernel_size: 21
+      kernel_list: ['iso', 'aniso', 'generalized_iso', 'generalized_aniso', 'plateau_iso', 'plateau_aniso']
+      kernel_prob: [0.45, 0.25, 0.12, 0.03, 0.12, 0.03]
+      sinc_prob: 0.1
+      blur_sigma: [0.2, 3.0]
+      betag_range: [0.5, 4.0]
+      betap_range: [1, 2.0]
+
+      blur_kernel_size2: 15
+      kernel_list2: ['iso', 'aniso', 'generalized_iso', 'generalized_aniso', 'plateau_iso', 'plateau_aniso']
+      kernel_prob2: [0.45, 0.25, 0.12, 0.03, 0.12, 0.03]
+      sinc_prob2: 0.1
+      blur_sigma2: [0.2, 1.5]
+      betag_range2: [0.5, 4.0]
+      betap_range2: [1, 2.0]
+
+      final_sinc_prob: 0.8
+
+      gt_size: 256
+      crop_pad_size: 300
+      use_hflip: True
+      use_rot: False
+      rescale_gt: True
+  val:
+    type: base
+    params:
+      dir_path: testdata/Val_SR/lq
+      im_exts: png
+      transform_type: default
+      transform_kwargs:
+          mean: 0.5
+          std: 0.5
+      extra_dir_path: testdata/Val_SR/gt
+      extra_transform_type: default
+      extra_transform_kwargs:
+          mean: 0.5
+          std: 0.5
+      recursive: False
+
+train:
+  # learning rate
+  lr: 5e-5                      # learning rate 
+  lr_min: 2e-5                      # learning rate 
+  lr_schedule: ~
+  warmup_iterations: 5000
+  # dataloader
+  batch: [64, 8]                
+  microbatch: 8
+  num_workers: 4
+  prefetch_factor: 2            
+  # optimization settings
+  weight_decay: 0               
+  ema_rate: 0.999
+  iterations: 300000            # total iterations
+  # save logging
+  save_freq: 10000              
+  log_freq: [200, 2000, 1]         # [training loss, training images, val images]
+  local_logging: True           # manually save images
+  tf_logging: False             # tensorboard logging
+  # validation settings
+  use_ema_val: True            
+  val_freq: ${train.save_freq}
+  val_y_channel: True
+  val_resolution: ${model.params.lq_size}
+  val_padding_mode: reflect
+  # training setting
+  use_amp: True                # amp training
+  seed: 123456                 # random seed
+  global_seeding: False
+  # model compile
+  compile:
+    flag: False
+    mode: reduce-overhead      # default, reduce-overhead
